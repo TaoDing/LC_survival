@@ -1,0 +1,881 @@
+---
+  title: "cap 2020"
+output: html_document
+ 
+  html_document: 
+    toc: yes
+    toc_float: True 
+  pdf_document: default
+---
+
+          
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+# 1.Contrust phyloseq item
+
+```{r}
+library(vegan)
+library(picante)
+library(phyloseq)
+library(ggplot2)
+library(GUniFrac)
+library(plyr)
+library(ggpubr)
+library(microbiome)
+library(patchwork)
+library(nlme)
+library(reshape2)
+library(xlsx)
+library(ggsci)
+library(tableone)
+library(corrplot)
+library(psych)
+library(survival)
+library(survminer)
+library(pROC) 
+library(randomForest) 
+library(e1071)
+library(glmnet)
+library(multiROC)
+library(rfPermute)
+library(forestplot)
+
+#create_physeq
+ 
+otu <- read.delim('D:/CAP20200718/raw.data/table.from_biom.txt', row.names = 1, sep = '\t', stringsAsFactors = FALSE, check.names = FALSE)
+otumat <- otu
+# otumat1<- t(otu)
+# otumat2 <- Rarefy(otumat1, 10000)
+# otumat<- t(otumat2[["otu.tab.rff"]])
+
+metadata<- read.csv('D:/CAP20200718/raw.data/metadata.lrti.csv',header = T, sep = ',',row.names = 1)
+sub_metadata<- metadata[colnames(otumat),]
+
+taxmat<- read.table('D:/CAP20200718/raw.data/tax.lrti.txt', header = T, sep = '\t', row.names = 1)
+taxmat<- as.matrix(taxmat)
+
+tree<- read.tree('D:/CAP20200718/raw.data/tree.nwk')
+
+OTU = otu_table(otu, taxa_are_rows = TRUE)
+TAX = tax_table(taxmat)
+sampledata<- sample_data(sub_metadata)
+
+physeq0 = merge_phyloseq(OTU, TAX)
+physeq = merge_phyloseq(physeq0, sampledata, tree)
+physeq2 = merge_phyloseq(OTU, TAX, sampledata, tree)
+identical(physeq, physeq2)
+
+
+## filter
+prevdf = apply(X = otu_table(physeq2),
+               MARGIN = ifelse(taxa_are_rows(physeq2), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+
+physeq3<- prune_taxa(names(which(prevdf >= 2)), physeq2)
+
+physeq.lrti <- rarefy_even_depth(physeq3, rngseed = 123, sample.size = 10000, replace=T, trimOTUs = TRUE )
+## save(physeq.lrti, file='D:/CAP20200718/processing.data/physeq.lrti.Rdata')
+```
+
+# 2. Data analysis
+
+```{r}
+# load('D:/CAP20200718/processing.data/physeq.lrti.Rdata')
+
+
+physeq <- physeq.lrti
+
+meta <- read.xlsx("D:/CAP20200718/raw.data/OS.xlsx",sheetIndex = 2, row.names = TRUE, header = TRUE)
+meta <- subset(meta, Group != "NA")
+myVars <-c ("Sex", "Age", "BMI", "Antibiotics", "Smoking", "Drinking", "ARI", "WBC", "PLT", "NEUT", "LY", "MONO", "EO", "BASO")
+nonvar <- c("Age", "BMI", "Antibiotics", "Smoking", "Drinking", "ARI", "WBC", "PLT", "NEUT", "LY", "MONO", "EO", "BASO") 
+catVars <- c("Sex", "Antibiotics", "Smoking", "Drinking", "ARI")  
+table<- CreateTableOne(vars = myVars,
+                       factorVars = catVars,
+                       data = meta, 
+                       addOverall = TRUE,
+                       strata = "Group" ) 
+
+table1 <- print(table, 
+                showAllLevels=TRUE, 
+                nonnormal = nonvar) 
+# write.csv(table1, file = "D:/CAP20200718/output.data/table1.csv")
+
+## table 2
+
+os <- read.xlsx("D:/CAP20200718/raw.data/OS.xlsx",sheetIndex = 1, row.names = TRUE, header = TRUE)
+osda <- cbind(meta[rownames(os), c(2:7,16,17)], os[,c(3,6,7)])
+osda$LOGcopies <- ifelse(osda$LOGcopies >= median(na.omit(osda$LOGcopies)), 1, 0)
+
+
+myVars <-c ("Sex", "Age", "BMI", "Antibiotics", "Smoking", "Drinking", "Stages", "Shannon.index")
+nonvar <- c("Age", "BMI", "Shannon.index") 
+catVars <- c("Sex", "Antibiotics", "Smoking", "Drinking", "Stages")  
+table<- CreateTableOne(vars = myVars,
+                       factorVars = catVars,
+                       data = osda, 
+                       addOverall = TRUE,
+                       strata = "LOGcopies" ) 
+
+table2 <- print(table,
+                showAllLevels=TRUE, 
+                nonnormal = nonvar) 
+# write.csv(table2, file = "D:/CAP20200718/output.data/table2.csv")
+
+
+
+meta <- read.xlsx("D:/CAP20200718/raw.data/OS.xlsx",sheetIndex = 2, row.names = TRUE, header = TRUE)
+
+meta <- subset(meta, Group != "NA")
+
+
+my_comparisons2 <- list(c("Health", "Cancer"), c("Health", "LRTI"), c("Cancer", "LRTI"))
+
+meta$Group<-factor(meta$Group,levels=c('Health', 'Cancer',  'LRTI'))
+
+col <- c("#00468b", "#ad002a", "#0099b4")
+
+p1 <- ggplot(meta, aes(Group, LOGcopies))+ 
+    stat_summary(aes(fill = Group),fun=mean, fun.args = list(mult=1),geom='bar',colour="black", width=.7, alpha=0.5) +
+    stat_summary(fun.data = mean_sdl,fun.args = list(mult=1), geom='errorbar', width=.2) +    
+    geom_jitter(aes(fill = Group),position = position_jitter(0.2),shape=21, size = 1.5)+
+    scale_fill_manual(values= col)+
+    theme_classic()+
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          axis.title=element_text(size=13,face="plain",color="black"),
+          axis.text = element_text(size=12,face="plain",color="black"),
+          legend.position="none"
+    )+
+    stat_compare_means(comparisons = my_comparisons2, paired = FALSE, color="black", label = "p.signif")+
+    labs(y = "BAL bacterial burden \n log10 (16S rRNA gene Copies/ml) ", x = " ", title = "")
+
+
+p2 <- ggplot(meta, aes(Group, Shannon.index))+ 
+    stat_summary(aes(fill = Group),fun=mean, fun.args = list(mult=1),geom='bar',colour="black", width=.7, alpha=0.5) +
+    stat_summary(fun.data = mean_sdl,fun.args = list(mult=1), geom='errorbar', width=.2) +    
+    geom_jitter(aes(fill = Group),position = position_jitter(0.2),shape=21, size = 1.5)+
+    scale_fill_manual(values= col)+
+    theme_classic()+
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          axis.title=element_text(size=13,face="plain",color="black"),
+          axis.text = element_text(size=12,face="plain",color="black"),
+          legend.position="none"
+    )+
+    stat_compare_means(comparisons = my_comparisons2, paired = FALSE, color="black", label = "p.signif")+
+    labs(y = "Shannon-index", x = " ", title = "")
+
+
+p1 | p2
+
+
+meta1 <- meta[,c(2:8,16,17)]
+
+meta1$Sex[which(meta1$Sex == "Female")] = "No"
+meta1$Sex[which(meta1$Sex == "Male")] = "Yes"
+
+meta1$Age[which(meta1$Age >= 60)] = "Yes"
+meta1$Age[which(meta1$Age < 60)] = "No"
+
+meta1$BMI[which(meta1$BMI > median(na.omit(meta1$BMI)))] = "Yes"
+meta1$BMI[which(meta1$BMI <= median(na.omit(meta1$BMI)))] = "No"
+
+meta2 <- melt(meta1, measure.vars = c("Sex", "Age", "BMI", "Antibiotics", "Smoking", "Drinking", "ARI"))
+
+my_comparisons3 <- list(c("No", "Yes"))
+meta3 <- subset(meta2, value != "NA")
+
+p3 <- ggplot(meta3, aes(value, LOGcopies))+ 
+    stat_summary(aes(fill = value),fun=mean, fun.args = list(mult=1),geom='bar',colour="black", width=.7, alpha=0.5) +
+    stat_summary(fun.data = mean_sdl,fun.args = list(mult=1), geom='errorbar', width=.2) +    
+    geom_jitter(position = position_jitter(0.1),shape=21, size = 1.5, fill = "black")+
+    scale_fill_aaas()+
+    theme_classic()+
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          axis.title=element_text(size=13,face="plain",color="black"),
+          axis.text = element_text(size=12,face="plain",color="black"),
+          legend.position="none"
+    )+
+    labs(y = "BAL bacterial burden \n log10 (16S rRNA gene Copies/ml) ", x = " ", title = "")+
+    facet_wrap(.~variable, nrow = 1, scales = "free_x")+
+    theme(strip.text = element_text(colour = 'black', face = 'bold', size = rel(1.2)), strip.background = element_rect(fill = 'white', colour = 'black', size = rel(2), linetype = 1))+
+    stat_compare_means(comparisons = my_comparisons3, paired = FALSE, color="black", label = "p.signif")
+
+meta4 <- subset(meta2, value != "NA" & Shannon.index != "NA")
+
+p4 <- ggplot(meta4, aes(value, Shannon.index))+ 
+    stat_summary(aes(fill = value),fun=mean, fun.args = list(mult=1),geom='bar',colour="black", width=.7, alpha=0.5) +
+    stat_summary(fun.data = mean_sdl,fun.args = list(mult=1), geom='errorbar', width=.2) +    
+    geom_jitter(position = position_jitter(0.1),shape=21, size = 1.5, fill = "black")+
+    scale_fill_aaas()+
+    theme_classic()+
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          axis.title=element_text(size=13,face="plain",color="black"),
+          axis.text = element_text(size=12,face="plain",color="black"),
+          legend.position="none"
+    )+
+    labs(y = "Shannon-index", x = " ", title = "")+
+    facet_wrap(.~variable, nrow = 1, scales = "free_x")+
+    theme(strip.text = element_text(colour = 'black', face = 'bold', size = rel(1.2)), strip.background = element_rect(fill = 'white', colour = 'black', size = rel(2), linetype = 1))+
+    stat_compare_means(comparisons = my_comparisons3, paired = FALSE, color="black", label = "p.signif")
+
+p3 / p4
+
+```
+
+
+## RF
+
+```{r}
+os <- read.xlsx("D:/CAP20200718/raw.data/OS.xlsx",sheetIndex = 1, row.names = TRUE, header = TRUE)
+
+names <- na.omit(os$BAL_16S)
+sample_data(physeq.lrti)$human <- get_variable(physeq.lrti, "id") %in% names
+physeq.1<- subset_samples(physeq.lrti, human=="TRUE")
+
+physeq.2 <- subset_samples(physeq, type %in% 'BAL' & human_id %in% rownames(subset(meta, Group != "Cancer")))
+
+physeqs <- merge_phyloseq(physeq.1, physeq.2)
+
+prevdf = apply(X = otu_table(physeqs),
+               MARGIN = ifelse(taxa_are_rows(physeqs), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+
+physeqs.great<- prune_taxa(names(which(prevdf >= 3)), physeqs)
+
+sub_meta <- meta[physeqs.great@sam_data[["human_id"]],]
+otus <- as.data.frame(t(physeqs.great@otu_table@.Data))*(sub_meta$LOGcopies+0.001)
+rownames(otus) <- rownames(sub_meta)
+OTUs = otu_table(as.data.frame(t(otus)), taxa_are_rows  = TRUE)
+sample_data<- sample_data(sub_meta)
+taxmat1 <-  tax_table(taxmat[colnames(otus),])
+ab.physeq <- merge_phyloseq(OTUs, sample_data, taxmat1)
+
+
+## RF
+
+physeq10 = tax_glom(physeqs.great, "Genus")
+physeq1 <- physeq10
+data <- as.data.frame(t(physeq1@otu_table@.Data))
+colnames(data) <- as.data.frame(physeq1@tax_table@.Data)$Genus
+colnames(data) <- make.names(colnames(data))
+data1 <- data[,!colnames(data) %in% c("g__uncultured", "g__uncultured bacterium", "g__uncultured rumen bacterium","g__uncultured forest soil bacterium" ,"g__hydrothermal vent metagenome" ,"g__uncultured soil bacterium" ,"g__uncultured compost bacterium" ,"g__unidentified")]
+subs <- sub_meta
+subs$Group <- as.character(subs$Group)
+data1$group <- as.factor(subs$Group)
+iris <- data1
+total_number <- nrow(iris)
+set.seed(123)
+train_idx <- sample(total_number, round(total_number*0.7))
+train_df <- iris[train_idx, ]
+test_df <- iris[-train_idx, ]
+
+rf_res <- randomForest::randomForest(group~., data = train_df, ntree = 100)
+rf_pred <- predict(rf_res, test_df, type = 'prob') 
+rf_pred <- data.frame(rf_pred)
+colnames(rf_pred) <- paste(colnames(rf_pred), "_pred_RF")
+
+#2.0
+physeq10 = tax_glom(ab.physeq, "Genus")
+physeq1 <- physeq10
+data <- as.data.frame(t(physeq1@otu_table@.Data))
+colnames(data) <- as.data.frame(physeq1@tax_table@.Data)$Genus
+colnames(data) <- make.names(colnames(data))
+data1 <- data[,!colnames(data) %in% c("g__uncultured", "g__uncultured bacterium", "g__uncultured rumen bacterium","g__uncultured forest soil bacterium" ,"g__hydrothermal vent metagenome" ,"g__uncultured soil bacterium" ,"g__uncultured compost bacterium" ,"g__unidentified")]
+data1$group <- as.factor(subs$Group)
+iris <- data1
+total_number <- nrow(iris)
+set.seed(123)
+train_idx <- sample(total_number, round(total_number*0.7))
+train_df <- iris[train_idx, ]
+test_df <- iris[-train_idx, ]
+
+re.rf_res <- randomForest::randomForest(group~., data = train_df, ntree = 100)
+re.rf_pred <- predict(re.rf_res, test_df, type = 'prob') 
+re.rf_pred <- data.frame(re.rf_pred)
+colnames(re.rf_pred) <- paste(colnames(re.rf_pred), "_pred_RFre")
+
+true_label <- data.frame(dummies::dummy(test_df$group, sep = "."))
+colnames(true_label) <- gsub(".*?\\.", "", colnames(true_label))
+colnames(true_label) <- paste(colnames(true_label), "_true")
+final_df <- cbind(true_label, rf_pred, re.rf_pred)
+
+roc_res <- multi_roc(final_df, force_diag=F)
+pr_res <- multi_pr(final_df, force_diag=F)
+
+plot_roc_df <- plot_roc_data(roc_res)
+plot_pr_df <- plot_pr_data(pr_res)
+
+col1 <- c("#ad002a", "#00468b", "#0099b4", "black", "grey")
+p1 <- ggplot(plot_roc_df, aes(x = 1-Specificity, y=Sensitivity)) +
+    geom_path(aes(color = Group, linetype= rev(Method)), size=1.5) +
+    scale_color_manual(values= col1)+
+    geom_segment(aes(x = 0, y = 0, xend = 1, yend = 1), 
+                 colour='grey', linetype = 'dotdash') +
+    theme_classic() + 
+    theme(plot.title = element_text(hjust = 0.5), 
+          legend.justification=c(1, 0), legend.position=c(.95, .05),
+          legend.title=element_blank(), 
+          legend.background = element_rect(fill=NULL, size=0.5, 
+                                           linetype="solid", colour ="black"))
+
+
+View(plot_roc_df[!duplicated(paste0(plot_roc_df$Group, plot_roc_df$Method)),])
+
+set.seed(123)
+richness_rfP<- rfPermute(group~., data = train_df, ntree = 100,
+                         na.action = na.omit, nrep = 100)
+imp <- as.data.frame(importance(richness_rfP))
+imp1 <- imp[which(imp$MeanDecreaseGini.pval < 0.05), c("MeanDecreaseGini", "MeanDecreaseGini.pval")]
+imp2 <- imp1
+imp2$genus <- rownames(imp2)
+imp2$genus <- factor(imp2$genus, levels=imp2$genus[order(imp2$MeanDecreaseGini)])
+ggplot(imp2, aes(y=genus, x=MeanDecreaseGini))+ 
+    geom_bar(stat="identity", position="dodge", aes(fill=MeanDecreaseGini.pval))+
+  theme_classic()
+
+
+
+distance <- vegdist(t(OTUs), method = 'bray')
+pcoa <- cmdscale(distance, k = (nrow(t(OTUs)) - 1), eig = TRUE)
+plot_data <- data.frame({pcoa$point})[1:2]
+names(plot_data)[1:2] <- c('PCoA1', 'PCoA2')
+eig <- pcoa$eig
+
+
+fit <- envfit(pcoa, meta(ab.physeq)[,-1], permutations = 999, na.rm = TRUE)
+fit_val <- scores(fit, display = c("vectors", "factors"))
+fit_val <- rbind(fit_val[["vectors"]], fit_val[["factors"]])[c('Shannon.index', 'LOGcopies', 'AntibioticsYes'),]
+
+fit1 <- envfit(pcoa, data1[, rownames(imp1)], permutations = 999)
+fit_val1 <- as.data.frame(scores(fit1, display = c("vectors"))[names(which(fit1[["vectors"]][["pvals"]] < 1)),])
+colnames(fit_val1) <- c('PCoA1', 'PCoA2')
+fit_val1$group <- c("group")
+fit_val1$type <- c("bac")
+
+plot_data$group <- data1$group
+plot_data$type <- c("hum")
+
+dat <- rbind(plot_data, fit_val1)
+
+col2 <- c("#ad002a", "#00468b", "#0099b4")
+p2 <- ggplot(plot_data, aes(x = PCoA1, y = PCoA2)) +
+    geom_point(aes(color = group), size = 2) +
+    stat_ellipse(aes(x = PCoA1, y = PCoA2, fill = group), geom = "polygon", alpha = 1/2) +
+    scale_fill_manual(values= col2)+
+    scale_color_manual(values= col2)+
+    geom_point(data=data.frame(fit_val1), shape = 8)+
+    geom_text_repel(data=data.frame(fit_val1), aes(label=rownames(fit_val1)), max.overlaps = 100)+
+    geom_segment(data=data.frame(fit_val), 
+                 aes(x=0,y=0,xend=Dim1, yend=Dim2), 
+                 arrow=arrow(length=unit(0.2,"cm")), 
+                 color='black',alpha=1)  + 
+    geom_label_repel(data=data.frame(fit_val), aes(Dim1, Dim2, label=rownames(fit_val)),
+                     color='black',alpha=1,
+                     segment.color = 'grey35',
+                     point.padding = unit(0.1,"lines")) +
+    labs(x = paste("PCoA 1 (", format(100*eig[1]/sum(eig), digits = 4), "%)",sep = ""), 
+         y = paste("PCoA 2 (", format(100*eig[2]/sum(eig), digits = 4), "%)",sep = ""))+
+    theme_classic()
+
+bray <- phyloseq::distance(ab.physeq, "bray")
+adonis2(bray ~ data1$group, perm=999)
+
+```
+
+
+# 3. log-rank
+
+```{r}
+
+os <- read.xlsx("D:/CAP20200718/raw.data/OS.xlsx",sheetIndex = 1, row.names = TRUE, header = TRUE)
+os$OS_time <- os$OS_time/30
+os$Shannon <- meta[rownames(os),]$Shannon.index
+os$copies <- meta[rownames(os),]$LOGcopies
+
+## medium
+os$s.group <- ifelse(meta[rownames(os),]$Shannon.index >= median(na.omit(meta[rownames(os),]$Shannon.index)), 1, 0)
+os$c.group <- ifelse(meta[rownames(os),]$LOGcopies >= median(na.omit(meta[rownames(os),]$LOGcopies)), 1, 0)
+
+fit <- survfit(Surv(`OS_time`, OS_event)~s.group, data=os)
+
+
+col2 <- c("#ad002a","#3b4992")
+ggsurvplot(fit, xlab = "Time(Months)",
+           pval = TRUE, conf.int = FALSE,
+           risk.table = TRUE,surv.scale="percent" ,
+           palette = c("#8a4048", "#26496d"),
+           break.x.by=12)
+
+data.survdiff <- survdiff(Surv(`OS_time`, OS_event)~s.group, data=os)
+HR = (data.survdiff$obs[2]/data.survdiff$exp[2])/(data.survdiff$obs[1]/data.survdiff$exp[1])
+
+fit <- survfit(Surv(`OS_time`, OS_event)~c.group, data=os)
+
+col2 <- c("#ad002a","#3b4992")
+ggsurvplot(fit, xlab = "Time(Months)",
+           pval = TRUE, conf.int = FALSE,
+           risk.table = TRUE,surv.scale="percent" ,
+           palette = c("#8a4048", "#26496d"),
+           break.x.by=12)
+
+data.survdiff <- survdiff(Surv(`OS_time`, OS_event)~c.group, data=os)
+HR = (data.survdiff$obs[2]/data.survdiff$exp[2])/(data.survdiff$obs[1]/data.survdiff$exp[1])
+
+## cut-off
+os$Shannon <- meta[rownames(os),]$Shannon.index
+os$copies <- meta[rownames(os),]$LOGcopies
+
+res.cut <- surv_cutpoint(os, 
+                         time = "OS_time", 
+                         event = "OS_event", 
+                         variables = "copies" 
+)
+
+res.cat <- surv_categorize(res.cut)
+fit <- survfit(Surv(`OS_time`, OS_event)~copies, data=res.cat)
+col2 <- c("#ad002a","#3b4992")
+ggsurvplot(fit, xlab = "Time(Months)",
+           pval = TRUE, conf.int = FALSE,
+           risk.table = TRUE,surv.scale="percent" ,
+           palette = c("#8a4048", "#26496d"),
+           break.x.by=12)
+
+res.cut <- surv_cutpoint(os, 
+                         time = "OS_time", 
+                         event = "OS_event", 
+                         variables = "Shannon" 
+)
+
+res.cat <- surv_categorize(res.cut)
+fit <- survfit(Surv(`OS_time`, OS_event)~Shannon, data=res.cat)
+col2 <- c("#ad002a","#3b4992")
+ggsurvplot(fit, xlab = "Time(Months)",
+           pval = TRUE, conf.int = FALSE,
+           risk.table = TRUE,surv.scale="percent" ,
+           palette = c("#8a4048", "#26496d"),
+           break.x.by=12)
+
+
+## Observed
+s.sh <- plot_richness(physeq.lrti, "group")
+s.data <- s.sh$data
+
+s.data1 <- subset(s.data, samples %in% na.omit(os$BAL_16S) & variable == "Observed")
+rownames(s.data1) <- s.data1$human_id
+os$Observed <- s.data1[rownames(os),]$value
+
+res.cut <- surv_cutpoint(os,
+                         time = "OS_time", 
+                         event = "OS_event", 
+                         variables = "Observed" 
+)
+
+res.cat <- surv_categorize(res.cut)
+fit <- survfit(Surv(`OS_time`, OS_event)~Observed, data=res.cat)
+col2 <- c("#ad002a","#3b4992")
+ggsurvplot(fit, xlab = "Time(Months)",
+           pval = TRUE, conf.int = FALSE,
+           risk.table = TRUE,surv.scale="percent" ,
+           palette = c("#8a4048", "#26496d"),
+           break.x.by=12)
+
+os$Observed.group <- ifelse(os$Observed >= median(na.omit(os$Observed)), 1, 0)
+fit <- survfit(Surv(`OS_time`, OS_event)~Observed.group, data=os)
+
+col2 <- c("#ad002a","#3b4992")
+ggsurvplot(fit, xlab = "Time(Months)",
+           pval = TRUE, conf.int = FALSE,
+           risk.table = TRUE,surv.scale="percent" ,
+           palette = c("#8a4048", "#26496d"),
+           break.x.by=12)
+
+
+## Chao1
+
+s.data1 <- subset(s.data, samples %in% na.omit(os$BAL_16S) & variable == "Chao1")
+rownames(s.data1) <- s.data1$human_id
+os$Chao1 <- s.data1[rownames(os),]$value
+
+res.cut <- surv_cutpoint(os, 
+                         time = "OS_time", 
+                         event = "OS_event", 
+                         variables = "Chao1" 
+)
+
+res.cat <- surv_categorize(res.cut)
+fit <- survfit(Surv(`OS_time`, OS_event)~Chao1, data=res.cat)
+col2 <- c("#ad002a","#3b4992")
+ggsurvplot(fit, xlab = "Time(Months)",
+           pval = TRUE, conf.int = FALSE,
+           risk.table = TRUE,surv.scale="percent" ,
+           palette = c("#8a4048", "#26496d"),
+           break.x.by=12)
+
+os$Chao1.group <- ifelse(os$Chao1 >= median(na.omit(os$Chao1)), 1, 0)
+fit <- survfit(Surv(`OS_time`, OS_event)~Chao1.group, data=os)
+
+col2 <- c("#ad002a","#3b4992")
+ggsurvplot(fit, xlab = "Time(Months)",
+           pval = TRUE, conf.int = FALSE,
+           risk.table = TRUE,surv.scale="percent" ,
+           palette = c("#8a4048", "#26496d"),
+           break.x.by=12)
+
+## ACE
+s.data1 <- subset(s.data, samples %in% na.omit(os$BAL_16S) & variable == "ACE")
+rownames(s.data1) <- s.data1$human_id
+os$ACE <- s.data1[rownames(os),]$value
+
+res.cut <- surv_cutpoint(os, 
+                         time = "OS_time", 
+                         event = "OS_event", 
+                         variables = "ACE" 
+)
+
+res.cat <- surv_categorize(res.cut)
+fit <- survfit(Surv(`OS_time`, OS_event)~ACE, data=res.cat)
+col2 <- c("#ad002a","#3b4992")
+ggsurvplot(fit, xlab = "Time(Months)",
+           pval = TRUE, conf.int = FALSE,
+           risk.table = TRUE,surv.scale="percent" ,
+           palette = c("#8a4048", "#26496d"),
+           break.x.by=12)
+
+os$ACE.group <- ifelse(os$ACE >= median(na.omit(os$ACE)), 1, 0)
+fit <- survfit(Surv(`OS_time`, OS_event)~ACE.group, data=os)
+
+col2 <- c("#ad002a","#3b4992")
+ggsurvplot(fit, xlab = "Time(Months)",
+           pval = TRUE, conf.int = FALSE,
+           risk.table = TRUE,surv.scale="percent" ,
+           palette = c("#8a4048", "#26496d"),
+           break.x.by=12)
+
+
+## Simpson
+
+s.data1 <- subset(s.data, samples %in% na.omit(os$BAL_16S) & variable == "Simpson")
+rownames(s.data1) <- s.data1$human_id
+os$Simpson <- s.data1[rownames(os),]$value
+
+res.cut <- surv_cutpoint(os, 
+                         time = "OS_time", 
+                         event = "OS_event", 
+                         variables = "Simpson" 
+)
+
+res.cat <- surv_categorize(res.cut)
+fit <- survfit(Surv(`OS_time`, OS_event)~Simpson, data=res.cat)
+col2 <- c("#ad002a","#3b4992")
+ggsurvplot(fit, xlab = "Time(Months)",
+           pval = TRUE, conf.int = FALSE,
+           risk.table = TRUE,surv.scale="percent" ,
+           palette = c("#8a4048", "#26496d"),
+           break.x.by=12)
+
+os$Simpson.group <- ifelse(os$Simpson >= median(na.omit(os$Simpson)), 1, 0)
+fit <- survfit(Surv(`OS_time`, OS_event)~Simpson.group, data=os)
+
+col2 <- c("#ad002a","#3b4992")
+ggsurvplot(fit, xlab = "Time(Months)",
+           pval = TRUE, conf.int = FALSE,
+           risk.table = TRUE,surv.scale="percent" ,
+           palette = c("#8a4048", "#26496d"),
+           break.x.by=12)
+
+
+## Fisher
+
+s.data1 <- subset(s.data, samples %in% na.omit(os$BAL_16S) & variable == "Fisher")
+rownames(s.data1) <- s.data1$human_id
+os$Fisher <- s.data1[rownames(os),]$value
+
+res.cut <- surv_cutpoint(os, 
+                         time = "OS_time", 
+                         event = "OS_event", 
+                         variables = "Fisher" 
+)
+
+res.cat <- surv_categorize(res.cut)
+fit <- survfit(Surv(`OS_time`, OS_event)~Fisher, data=res.cat)
+col2 <- c("#ad002a","#3b4992")
+ggsurvplot(fit, xlab = "Time(Months)",
+           pval = TRUE, conf.int = FALSE,
+           risk.table = TRUE,surv.scale="percent" ,
+           palette = c("#8a4048", "#26496d"),
+           break.x.by=12)
+
+os$Fisher.group <- ifelse(os$Fisher >= median(na.omit(os$Fisher)), 1, 0)
+fit <- survfit(Surv(`OS_time`, OS_event)~Fisher.group, data=os)
+
+col2 <- c("#ad002a","#3b4992")
+ggsurvplot(fit, xlab = "Time(Months)",
+           pval = TRUE, conf.int = FALSE,
+           risk.table = TRUE,surv.scale="percent" ,
+           palette = c("#8a4048", "#26496d"),
+           break.x.by=12)
+
+## InvSimpson
+
+s.data1 <- subset(s.data, samples %in% na.omit(os$BAL_16S) & variable == "InvSimpson")
+rownames(s.data1) <- s.data1$human_id
+os$InvSimpson <- s.data1[rownames(os),]$value
+
+res.cut <- surv_cutpoint(os, 
+                         time = "OS_time", 
+                         event = "OS_event", 
+                         variables = "InvSimpson" 
+)
+
+res.cat <- surv_categorize(res.cut)
+fit <- survfit(Surv(`OS_time`, OS_event)~InvSimpson, data=res.cat)
+col2 <- c("#ad002a","#3b4992")
+ggsurvplot(fit, xlab = "Time(Months)",
+           pval = TRUE, conf.int = FALSE,
+           risk.table = TRUE,surv.scale="percent" ,
+           palette = c("#8a4048", "#26496d"),
+           break.x.by=12)
+
+os$InvSimpson.group <- ifelse(os$InvSimpson >= median(na.omit(os$InvSimpson)), 1, 0)
+fit <- survfit(Surv(`OS_time`, OS_event)~InvSimpson.group, data=os)
+
+col2 <- c("#ad002a","#3b4992")
+ggsurvplot(fit, xlab = "Time(Months)",
+           pval = TRUE, conf.int = FALSE,
+           risk.table = TRUE,surv.scale="percent" ,
+           palette = c("#8a4048", "#26496d"),
+           break.x.by=12)
+
+
+```
+
+
+# 4. Cox
+
+
+```{r}
+os <- read.xlsx("D:/CAP20200718/raw.data/OS.xlsx",sheetIndex = 1, row.names = TRUE, header = TRUE)
+
+names <- na.omit(os$BAL_16S)
+sample_data(physeq.lrti)$human <- get_variable(physeq.lrti, "id") %in% names
+sub_physeq<- subset_samples(physeq.lrti, human=="TRUE")
+
+prevdf = apply(X = otu_table(sub_physeq),
+               MARGIN = ifelse(taxa_are_rows(sub_physeq), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+
+physeq.great<- prune_taxa(names(which(prevdf >= 5)), sub_physeq)
+
+otus <- as.data.frame(t(physeq.great@otu_table@.Data))[os$BAL_16S,]
+tax <- as.data.frame(physeq.great@tax_table@.Data)
+
+colnames(otus) <- paste0("ASV", seq(ncol(otus)))
+tax$ASV <- paste0("ASV", seq(ncol(otus)))
+
+osda <- cbind(meta[rownames(os), c(2:7,16,17)], os[,c(3,6,7)])
+
+osda$Sex <- ifelse(osda$Sex ==  "Female", 1, 0)
+osda$Age <- ifelse(osda$Age >= median(na.omit(osda$Age)), 1, 0)
+osda$BMI <- ifelse(osda$BMI >= median(na.omit(osda$BMI)), 1, 0)
+osda$Antibiotics <- ifelse(osda$Antibiotic ==  "Yes", 1, 0)
+osda$Smoking <- ifelse(osda$Smoking ==  "Yes", 1, 0)
+osda$Drinking <- ifelse(osda$Drinking ==  "Yes", 1, 0)
+osda$Stages <- ifelse(osda$Stages ==  "III", 2, 1)
+osda$Shannon.index <- ifelse(osda$Shannon.index >= median(na.omit(osda$Shannon.index)), 1, 0)
+
+ott <- otus*osda$LOGcopies
+osda$LOGcopies <- ifelse(osda$LOGcopies >= median(na.omit(osda$LOGcopies)), 1, 0)
+ for(i in colnames(ott)){
+     ott[,i] <- ifelse(ott[,i] > median(na.omit(ott[,i])), 1, 0)
+ }
+osdat <- cbind(ott, osda)
+
+y<- Surv(time=osdat$OS_time,event=osdat$OS_event==1)
+
+#Uni_cox_model
+Uni_cox_model<- function(x){
+    FML <- as.formula(paste0 ("y~",x))
+    cox<- coxph(FML,data=osdat)
+    cox1<-summary(cox)
+    HR <- round(cox1$coefficients[,2],2)
+    PValue <- round(cox1$coefficients[,5],3)
+    CI5 <-round(cox1$conf.int[,3],2)
+    CI95 <-round(cox1$conf.int[,4],2)
+    Uni_cox_model<- data.frame('Characteristics' = x,
+                               'HR' = HR,
+                               'CI5' = CI5,
+                               'CI95' = CI95,
+                               'p' = PValue)
+    return(Uni_cox_model)}  
+
+variable.names<- colnames(osdat)[c(1:c(ncol(osdat)-2))] 
+Uni_cox <- lapply(variable.names, Uni_cox_model)
+Uni_cox<- ldply(Uni_cox,data.frame)
+Uni_cox2<- Uni_cox
+Uni_cox$CI<-paste(Uni_cox$CI5,'-',Uni_cox$CI95)
+Uni_cox<-Uni_cox[,-3:-4]
+View(Uni_cox)
+
+Uni_cox3 <- Uni_cox2[c(545:550,553), ]
+Uni_cox3 <- Uni_cox3[order(Uni_cox3$HR),]
+forestplot(Uni_cox3, labeltext=rownames(Uni_cox3$Characteristics),
+           mean= log2(Uni_cox3$HR),
+           lower=log2(Uni_cox3$CI5), upper=log2(Uni_cox3$CI95),
+           boxsize=0.2,
+           ref_line = 0,
+           col=fpColors(box="#ba3520", lines="black"),
+           cex=0.9, lineheight = "auto",
+           colgap=unit(5,"mm"),
+           lwd.ci=2, 
+           ci.vertices=TRUE, ci.vertices.height = 0.1,xlim = c(0, 5))
+
+
+#2.multi
+
+names <- Uni_cox$Characteristics[Uni_cox$p < 0.05]
+mul_cox2 <- matrix(0, length(names), 4)
+colnames(mul_cox2) <- c("mean",  "lower", "upper", "P")
+rownames(mul_cox2) <- names
+mul_cox2 <- as.data.frame(mul_cox2)
+
+for(i in names){
+mul_cox_model<- as.formula(paste0 ("y~", paste0(c("Sex",  "Stages", i),  collapse = "+")))
+mul_cox<-coxph(mul_cox_model,data=osdat)
+cox4<-summary(mul_cox) 
+
+mul_HR<- round(cox4$coefficients[,2],2) 
+mul_PValue<- round(cox4$coefficients[,5],4) 
+mul_CI1<-round(cox4$conf.int[,3],2)
+mul_CI2<-round(cox4$conf.int[,4],2)
+mul_CI<-paste(mul_CI1,'-',mul_CI2)
+mul_cox1<- data.frame("HR"=mul_HR,"CI"=mul_CI, "P"=mul_PValue)
+cox<- data.frame("mean"=mul_HR,"lower"=mul_CI1, "upper" = mul_CI2, "P"=mul_PValue)
+mul_cox2[i,] <- cox[i,]
+}
+
+
+mul_cox3 <- mul_cox2[which(mul_cox2$P < 0.05), ]
+mul_cox3 <- mul_cox3[-nrow(mul_cox3),]
+mul_cox3 <- mul_cox3[order(mul_cox3$mean),]
+forestplot(mul_cox3, labeltext=rownames(mul_cox3),
+           mean= log2(mul_cox3$mean),
+           lower=log2(mul_cox3$lower), upper=log2(mul_cox3$upper),
+           boxsize=0.2,
+           ref_line = 0,
+           col=fpColors(box="#ba3520", lines="black"),
+           cex=0.9, lineheight = "auto",
+           colgap=unit(5,"mm"),
+           lwd.ci=2, 
+           ci.vertices=TRUE, ci.vertices.height = 0.1,xlim = c(0, 5))
+
+dd <- subset(tax, ASV %in% rownames(mul_cox3))
+dat <- osdat
+dat$OS_time <- dat$OS_time/30
+fit <- survfit(Surv(`OS_time`, OS_event)~ASV18, data=dat)
+col2 <- c("#ad002a","#3b4992")
+ggsurvplot(fit, xlab = "Time(Months)",
+           pval = TRUE, conf.int = FALSE,
+           risk.table = TRUE,surv.scale="percent" ,
+           palette = c("#26496d","#8a4048"),
+           break.x.by=12)
+
+
+## correlation
+cytokine <- read.xlsx("D:/CAP20200718/processing.data/qPCR整理-20221109.xlsx",sheetIndex = 2, row.names = TRUE, header = TRUE)
+
+cyt <- cytokine[, c(26:75)]
+cyto <- cyt[,which(apply(cyt, 2, function(x){length(which(x == "NA"))}) < 84)]
+cytok=as.data.frame(lapply(cyto,as.numeric))
+rownames(cytok) <- rownames(cyto)
+
+name <- intersect(rownames(otus), rownames(cyto))
+cytoki <- cytok[name, c(1:10, 12:28, 30:39, 41:45)]
+osda <- cbind(meta[rownames(os), c(2:7,16,17)], os[,c(3,6,7)])
+ott <- otus*osda$LOGcopies
+bac <- ott[name, rownames(subset(mul_cox2, P < 0.05))[1:8]]
+cor <- corr.test(log10(bac+1), cytoki, method = "pearson")
+
+p1 <- pheatmap::pheatmap(cor$r)
+
+r <- cor$r[p1$tree_row$order, p1$tree_col$order]
+p <- cor$p.adj[p1$tree_row$order, p1$tree_col$order]
+
+corrplot(r, method='color',tl.pos='lt',tl.col='black', p.mat=p, insig= 'label_sig', sig.level=c(.001, .01, .05), pch.cex= .9, pch.col='black', xpd = T,tl.srt = 45)
+
+
+
+
+GEO <- read.xlsx("D:/CAP20200718/raw.data/GEO.lung.xlsx",sheetIndex = 3, row.names = FALSE, header = TRUE)
+
+
+GEO1 <- subset(GEO, Gene == "ALL")
+
+forestplot(GEO1[, c(1,5,6)],
+           mean= log2(GEO1$HR),
+           lower=log2(GEO1$lw), upper=log2(GEO1$up),
+           boxsize=0.2,
+           ref_line = 0,
+           col=fpColors(box="#ba3520", lines="black"),
+           cex=0.9, lineheight = "auto",
+           colgap=unit(5,"mm"),
+           lwd.ci=2, 
+           ci.vertices=TRUE, ci.vertices.height = 0.1,xlim = c(-2, 4))
+
+
+GEO1 <- subset(GEO, Gene == "IL1B")
+
+forestplot(GEO1[, c(1, 5,6)],
+                 mean= log2(GEO1$HR),
+                 lower=log2(GEO1$lw), upper=log2(GEO1$up),
+                 boxsize=0.2,
+                 ref_line = 0,
+                 col=fpColors(box="#ba3520", lines="black"),
+                 cex=0.9, lineheight = "auto",
+                 colgap=unit(5,"mm"),
+                 lwd.ci=2, 
+                 ci.vertices=TRUE, ci.vertices.height = 0.1,xlim = c(-2, 4))
+
+GEO1 <- subset(GEO, Gene == "CXCL9")
+
+forestplot(GEO1[, c(1,5,6)],
+                 mean= log2(GEO1$HR),
+                 lower=log2(GEO1$lw), upper=log2(GEO1$up),
+                 boxsize=0.2,
+                 ref_line = 0,
+                 col=fpColors(box="#ba3520", lines="black"),
+                 cex=0.9, lineheight = "auto",
+                 colgap=unit(5,"mm"),
+                 lwd.ci=2, 
+                 ci.vertices=TRUE, ci.vertices.height = 0.1,xlim = c(-2, 4))
+
+GEO1 <- subset(GEO, Gene == "G-CSF")
+forestplot(GEO1[, c(1,5,6)],
+                 mean= log2(GEO1$HR),
+                 lower=log2(GEO1$lw), upper=log2(GEO1$up),
+                 boxsize=0.2,
+                 ref_line = 0,
+                 col=fpColors(box="#ba3520", lines="black"),
+                 cex=0.9, lineheight = "auto",
+                 colgap=unit(5,"mm"),
+                 lwd.ci=2, 
+                 ci.vertices=TRUE, ci.vertices.height = 0.1,xlim = c(-2, 4))
+
+GEO1 <- subset(GEO, Gene == "EGF")
+
+forestplot(GEO1[, c(1,5,6)],
+                 mean= log2(GEO1$HR),
+                 lower=log2(GEO1$lw), upper=log2(GEO1$up),
+                 boxsize=0.2,
+                 ref_line = 0,
+                 col=fpColors(box="#ba3520", lines="black"),
+                 cex=0.9, lineheight = "auto",
+                 colgap=unit(5,"mm"),
+                 lwd.ci=2, 
+                 ci.vertices=TRUE, ci.vertices.height = 0.1,xlim = c(-2, 4))
+```
